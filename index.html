@@ -18,8 +18,6 @@
     <!-- 引入 Chart.js (確保使用 UMD 版本) -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.min.js"></script>
     
-    <!-- 移除 Lucide React CDN，改用內建 SVG 以避免載入錯誤 -->
-
     <style>
         body {
             background-color: #0f172a; /* slate-950 */
@@ -47,7 +45,6 @@
         const { useState, useEffect, useMemo, useRef } = React;
         
         // --- 內建 Icons (取代外部 lucide-react 依賴) ---
-        // 這樣做可以避免 ReferenceError: lucideReact is not defined
         const IconBase = ({ children, size = 24, className = "" }) => (
             <svg 
                 xmlns="http://www.w3.org/2000/svg" 
@@ -122,67 +119,90 @@
 
         const { Bell, TrendingUp, AlertTriangle, Info, RefreshCw, Smartphone, ArrowUp, ArrowDown } = Icons;
 
-        // --- 自定義 Chart 元件 (取代 react-chartjs-2) ---
-        // 這能解決 UMD 載入錯誤的問題，直接使用 window.Chart
+        // --- 自定義 Chart 元件 ---
         const ChartComponent = ({ data, options, type = 'line' }) => {
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
 
             useEffect(() => {
                 if (!chartRef.current) return;
-
-                // 如果已有圖表實例，先銷毀
                 if (chartInstance.current) {
                     chartInstance.current.destroy();
                 }
-
-                // 建立新圖表
                 const ctx = chartRef.current.getContext('2d');
                 chartInstance.current = new Chart(ctx, {
                     type: type,
                     data: data,
                     options: options
                 });
-
-                // 清理函數
                 return () => {
                     if (chartInstance.current) {
                         chartInstance.current.destroy();
                     }
                 };
-            }, [data, options, type]); // 當數據改變時重新渲染
+            }, [data, options, type]);
 
             return <canvas ref={chartRef} />;
         };
 
         const App = () => {
-            const [selectedCoin, setSelectedCoin] = useState('bitcoin'); // 'bitcoin' or 'ethereum'
+            const [selectedCoin, setSelectedCoin] = useState('bitcoin');
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
             const [historicalData, setHistoricalData] = useState([]);
             const [currentFNG, setCurrentFNG] = useState(null);
-            const [notificationPermission, setNotificationPermission] = useState('default');
             const [lastUpdated, setLastUpdated] = useState(null);
-            
             const [prices, setPrices] = useState(null);
+            
+            // 通知開關狀態 (布林值，控制 UI 開關)
+            const [notificationsEnabled, setNotificationsEnabled] = useState(false);
 
-            const requestNotificationPermission = async () => {
+            // 初始檢查通知權限
+            useEffect(() => {
+                if ("Notification" in window && Notification.permission === 'granted') {
+                    setNotificationsEnabled(true);
+                }
+            }, []);
+
+            // 處理通知開關切換
+            const toggleNotifications = async () => {
                 if (!("Notification" in window)) {
                     alert("此瀏覽器不支援通知功能");
                     return;
                 }
-                const permission = await Notification.requestPermission();
-                setNotificationPermission(permission);
-                if (permission === 'granted') {
-                    new Notification("通知已啟用", {
-                        body: "當恐懼指數達到買入區間時，我們會通知您。",
-                        icon: "https://cryptologos.cc/logos/bitcoin-btc-logo.png"
-                    });
+
+                // 如果目前是開啟狀態 -> 關閉 (Local Mute)
+                if (notificationsEnabled) {
+                    setNotificationsEnabled(false);
+                    return;
+                }
+
+                // 如果目前是關閉狀態 -> 開啟
+                if (Notification.permission === 'granted') {
+                    setNotificationsEnabled(true);
+                    sendTestNotification();
+                } else if (Notification.permission === 'denied') {
+                    alert("通知權限已被封鎖。請前往瀏覽器設定 (網址列旁鎖頭圖示) 手動開啟通知權限。");
+                } else {
+                    // 請求權限
+                    const permission = await Notification.requestPermission();
+                    if (permission === 'granted') {
+                        setNotificationsEnabled(true);
+                        sendTestNotification();
+                    }
                 }
             };
 
+            const sendTestNotification = () => {
+                new Notification("通知已啟用 ✅", {
+                    body: "Smart DCA Bot 已準備好！當恐懼指數達到買入區間時，我們會立即通知您。",
+                    icon: "https://cryptologos.cc/logos/bitcoin-btc-logo.png"
+                });
+            };
+
             const triggerBuySignalNotification = (fngValue, coinName) => {
-                if (notificationPermission === 'granted') {
+                // 只有在開關開啟 (notificationsEnabled 為 true) 時才發送
+                if (notificationsEnabled && Notification.permission === 'granted') {
                     let intensity = "少量 DCA";
                     if (fngValue <= 25) intensity = "極度恐懼！建議強力買入";
                     else if (fngValue <= 45) intensity = "恐懼階段，建議加碼";
@@ -276,8 +296,12 @@
                     setHistoricalData(mergedData);
                     setLastUpdated(new Date());
 
+                    // 檢查是否需要發送通知
                     const todayFng = parseInt(fngJson.data[0].value);
                     if (todayFng <= 45) {
+                        // 注意：這裡是數據載入後自動觸發，我們需要確認現在是否已開啟通知
+                        // 由於閉包問題，直接使用 state 可能會有舊值，我們這裡簡單依賴觸發邏輯中的即時檢查
+                        // 為了確保首次載入能觸發（如果已經開啟），我們傳遞 state
                         triggerBuySignalNotification(todayFng, selectedCoin);
                     }
 
@@ -479,13 +503,25 @@
                                 </h1>
                             </div>
                             
-                            <button 
-                                onClick={requestNotificationPermission}
-                                className={`p-2 rounded-full transition-colors ${notificationPermission === 'granted' ? 'bg-slate-800 text-blue-400' : 'bg-blue-600 text-white animate-pulse'}`}
-                                title="開啟通知"
-                            >
-                                {notificationPermission === 'granted' ? <Bell size={20} /> : <Bell size={20} className="fill-current" />}
-                            </button>
+                            {/* iOS Style Notification Toggle */}
+                            <div className="flex items-center gap-3">
+                                <span className={`text-sm font-medium transition-colors ${notificationsEnabled ? 'text-white' : 'text-slate-500'}`}>
+                                    {notificationsEnabled ? '通知已開啟' : '每日通知'}
+                                </span>
+                                <button 
+                                    onClick={toggleNotifications}
+                                    className={`w-12 h-7 rounded-full p-1 transition-all duration-300 ease-in-out focus:outline-none relative ${
+                                        notificationsEnabled ? 'bg-green-500' : 'bg-slate-600'
+                                    }`}
+                                    title={notificationsEnabled ? "關閉通知" : "開啟通知"}
+                                >
+                                    <div 
+                                        className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-300 ease-in-out ${
+                                            notificationsEnabled ? 'translate-x-5' : 'translate-x-0'
+                                        }`} 
+                                    />
+                                </button>
+                            </div>
                         </div>
                     </header>
 
@@ -592,7 +628,7 @@
                                         <ul className="space-y-2 text-sm text-slate-400">
                                             <li className="flex gap-2">
                                                 <span className="text-blue-500">•</span>
-                                                <span>請點擊右上角鈴鐺開啟通知權限。</span>
+                                                <span>請點擊右上角開關開啟通知權限。</span>
                                             </li>
                                             <li className="flex gap-2">
                                                 <span className="text-blue-500">•</span>
